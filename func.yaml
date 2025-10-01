@@ -1,0 +1,9 @@
+
+schema_version: 20180708
+name: hello-world-writer
+version: 0.0.1
+runtime: docker
+memory: 256
+timeout: 30
+annotations:
+  oracle.com/oci/auth/principal: "dynamic_group"
