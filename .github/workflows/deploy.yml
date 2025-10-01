@@ -1,0 +1,64 @@
+
+name: Deploy Hello-World Function to OCI
+
+on:
+  push:
+    branches:
+      - main # Or whatever your main branch is
+
+env:
+  APP_NAME: "hello-world-app"
+  FUNCTION_NAME: "hello-world-writer"
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest # This is an AMD64 machine, so no platform issues!
+
+    steps:
+    - name: 1. Check out repository
+      uses: actions/checkout@v4
+
+    - name: 2. Configure OCI CLI
+      run: |
+        mkdir -p ~/.oci
+        echo "${{ secrets.OCI_PRIVATE_KEY }}" > ~/.oci/oci_api_key.pem
+        echo "[DEFAULT]" > ~/.oci/config
+        echo "user=${{ secrets.OCI_USER_OCID }}" >> ~/.oci/config
+        echo "fingerprint=${{ secrets.OCI_FINGERPRINT }}" >> ~/.oci/config
+        echo "tenancy=${{ secrets.OCI_TENANCY_OCID }}" >> ~/.oci/config
+        echo "region=${{ secrets.OCI_REGION }}" >> ~/.oci/config
+        echo "key_file=~/.oci/oci_api_key.pem" >> ~/.oci/config
+        chmod 600 ~/.oci/oci_api_key.pem ~/.oci/config
+
+    - name: 3. Log in to OCI Container Registry (OCIR)
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ secrets.OCI_REGION }}.ocir.io
+        username: ${{ secrets.OCIR_USERNAME }}
+        password: ${{ secrets.OCIR_AUTH_TOKEN }}
+
+    - name: 4. Set Image Tag Environment Variable
+      run: |
+        # The image path format is: <region>.ocir.io/<namespace>/<repo>/<image>:<tag>
+        # For functions, the repo is the application name.
+        IMAGE_TAG="${{ secrets.OCI_REGION }}.ocir.io/${{ secrets.OCI_NAMESPACE }}/${{ env.APP_NAME }}/${{ env.FUNCTION_NAME }}:${{ github.sha }}"
+        echo "FULL_IMAGE_NAME=$IMAGE_TAG" >> $GITHUB_ENV
+
+    - name: 5. Build and Push Docker Image
+      run: |
+        echo "Building image: ${{ env.FULL_IMAGE_NAME }}"
+        # No --platform flag needed! We are building on a native AMD64 runner.
+        docker build -t "${{ env.FULL_IMAGE_NAME }}" .
+        
+        echo "Pushing image to OCIR..."
+        docker push "${{ env.FULL_IMAGE_NAME }}"
+
+    - name: 6. Deploy Function to OCI
+      run: |
+        echo "Updating function with new image..."
+        oci fn function update \
+          --application-name "${{ env.APP_NAME }}" \
+          --function-name "${{ env.FUNCTION_NAME }}" \
+          --image "${{ env.FULL_IMAGE_NAME }}"
+          
+        echo "✅ Deployment successful!"
