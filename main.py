@@ -45,7 +45,7 @@ async def lifespan(app: FastAPI):
     log.info("Function cold start: Initializing dependencies...")
 
     # --- NEW DIAGNOSTIC LINE ---
-    log.info(f"DIAGNOSTIC: All visible environment keys: {list(os.environ.keys())}")
+    log.info(f"DIAGNOSTIC: All visible environments: {(os.environ)}")
     # --- END DIAGNOSTIC LINE ---
     
     key_file_path = None
