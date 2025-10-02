@@ -1,5 +1,5 @@
 
-FROM python:3.11-slim
+FROM python:3.12.3-slim-bookworm AS builder
 
 # Set the working directory in the container
 WORKDIR /app
