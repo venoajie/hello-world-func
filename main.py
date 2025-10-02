@@ -44,6 +44,10 @@ async def lifespan(app: FastAPI):
     log = logging.LoggerAdapter(logger, {'invocation_id': 'startup'})
     log.info("Function cold start: Initializing dependencies...")
 
+    # --- NEW DIAGNOSTIC LINE ---
+    log.info(f"DIAGNOSTIC: All visible environment keys: {list(os.environ.keys())}")
+    # --- END DIAGNOSTIC LINE ---
+    
     key_file_path = None
     try:
         raw_key_content = os.environ['OCI_PRIVATE_KEY_CONTENT']
