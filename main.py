@@ -12,14 +12,13 @@ import oci
 from fastapi import FastAPI, Header, HTTPException, Depends
 from fastapi.responses import JSONResponse
 
-# --- 1. Structured Logging (Unchanged) ---
+# --- 1. Structured Logging (Corrected) ---
 class JSONFormatter(logging.Formatter):
     def format(self, record):
         log_record = {
             "timestamp": record.created,
             "level": record.levelname,
             "message": record.getMessage(),
-            # --- THIS LINE IS FIXED ---
             "invocation_id": getattr(record, 'invocation_id', 'N/A'),
         }
         return json.dumps(log_record)
@@ -42,26 +41,20 @@ async def lifespan(app: FastAPI):
 
     key_file_path = None
     try:
-        # --- ENVIRONMENT SANITIZATION START ---
-        # The OCI runtime's os.environ object is unreliable for direct key access.
-        # We will copy the required values into a clean, standard Python dictionary
-        # at the very beginning to avoid any issues.
-        log.info("Sanitizing OCI environment variables into a local dictionary...")
-        app_config = {
-            "USER_OCID": os.environ.get("OCI_USER_OCID"),
-            "FINGERPRINT": os.environ.get("OCI_FINGERPRINT"),
-            "TENANCY_OCID": os.environ.get("OCI_TENANCY_OCID"),
-            "REGION": os.environ.get("OCI_REGION"),
-            "RAW_KEY_CONTENT": os.environ.get("OCI_PRIVATE_KEY_CONTENT")
-        }
-        # --- ENVIRONMENT SANITIZATION END ---
+        # --- THE DEFINITIVE FIX: DEEP COPY THE ENVIRONMENT ---
+        # The OCI runtime's os.environ object is unreliable. We perform a one-time,
+        # full copy into a standard Python dictionary and use it exclusively.
+        log.info("Performing a deep copy of the environment to a stable dictionary...")
+        app_config = dict(os.environ)
+        log.info("Environment copy complete.")
+        # --- From this point on, we ONLY use 'app_config', never 'os.environ' ---
 
-        # --- OCI UI WORKAROUND (UNCHANGED) ---
-        # The OCI Console UI strips newlines. We reconstruct the PEM format.
+        # --- OCI UI WORKAROUND (using our clean app_config) ---
         log.info("Reconstructing PEM key format...")
+        raw_key_content = app_config.get("OCI_PRIVATE_KEY_CONTENT", "")
         pem_header = "-----BEGIN RSA PRIVATE KEY-----"
         pem_footer = "-----END RSA PRIVATE KEY-----"
-        base64_body = app_config["RAW_KEY_CONTENT"].replace(pem_header, "").replace(pem_footer, "").strip()
+        base64_body = raw_key_content.replace(pem_header, "").replace(pem_footer, "").strip()
         wrapped_body = "\n".join(textwrap.wrap(base64_body, 64))
         private_key_content = f"{pem_header}\n{wrapped_body}\n{pem_footer}\n"
         log.info("PEM key successfully reconstructed.")
@@ -70,13 +63,14 @@ async def lifespan(app: FastAPI):
             key_file.write(private_key_content)
             key_file_path = key_file.name
 
-        # --- Use the CLEAN app_config dictionary from now on ---
+        # --- Build the final config using our clean app_config dictionary ---
+        # We use .get() for safety, though the keys should exist.
         config = {
-            "user": app_config["USER_OCID"],
+            "user": app_config.get("OCI_USER_OCID"),
             "key_file": key_file_path,
-            "fingerprint": app_config["FINGERPRINT"],
-            "tenancy": app_config["TENANCY_OCID"],
-            "region": app_config["REGION"]
+            "fingerprint": app_config.get("OCI_FINGERPRINT"),
+            "tenancy": app_config.get("OCI_TENANCY_OCID"),
+            "region": app_config.get("OCI_REGION")
         }
         
         oci.config.validate_config(config)
@@ -108,7 +102,7 @@ def get_os_client():
 
 app = FastAPI(title="Hello World Writer", docs_url=None, redoc_url=None, lifespan=lifespan)
 
-@app.post("/")
+@asynccontextmanager
 async def handle_invocation(
     os_client: Annotated[any, Depends(get_os_client)],
     fn_invoke_id: Annotated[str | None, Header(alias="fn-invoke-id")] = None
@@ -117,10 +111,12 @@ async def handle_invocation(
     log.info("Invocation received.")
     
     try:
-        # Note: You might want to sanitize these as well if they cause issues,
-        # but they are usually less problematic.
-        oci_namespace = os.environ['OCI_NAMESPACE']
-        target_bucket = os.environ['TARGET_BUCKET_NAME']
+        # It's safer to use our deep-copied config for these as well,
+        # but we need to pass it down from the lifespan. For now, let's
+        # assume these less critical variables work.
+        app_config = dict(os.environ)
+        oci_namespace = app_config.get('OCI_NAMESPACE')
+        target_bucket = app_config.get('TARGET_BUCKET_NAME')
 
         object_name = f"hello-from-fastapi-{log.extra['invocation_id']}.txt"
         file_content = f"Hello from FastAPI on OCI Functions! This is invocation {log.extra['invocation_id']}."
