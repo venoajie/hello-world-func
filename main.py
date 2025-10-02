@@ -5,7 +5,7 @@ import os
 import uuid
 import tempfile
 import textwrap
-import ast  # Import the Abstract Syntax Tree library for safe string evaluation
+import re  # Import the regular expression library
 from contextlib import asynccontextmanager
 from typing import Annotated
 
@@ -13,17 +13,11 @@ import oci
 from fastapi import FastAPI, Header, HTTPException, Depends
 from fastapi.responses import JSONResponse
 
-# --- 1. Structured Logging (Corrected) ---
+# --- Logging setup (unchanged) ---
 class JSONFormatter(logging.Formatter):
     def format(self, record):
-        log_record = {
-            "timestamp": record.created,
-            "level": record.levelname,
-            "message": record.getMessage(),
-            "invocation_id": getattr(record, 'invocation_id', 'N/A'),
-        }
+        log_record = { "timestamp": record.created, "level": record.levelname, "message": record.getMessage(), "invocation_id": getattr(record, 'invocation_id', 'N/A'), }
         return json.dumps(log_record)
-
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 handler = logging.StreamHandler()
@@ -31,7 +25,7 @@ handler.setFormatter(JSONFormatter())
 logger.addHandler(handler)
 logger.propagate = False
 
-# --- 2. Core Logic and Dependency Management ---
+# --- Core Logic ---
 object_storage_client = None
 
 @asynccontextmanager
@@ -42,47 +36,47 @@ async def lifespan(app: FastAPI):
 
     key_file_path = None
     try:
-        # --- THE DEFINITIVE FIX: PARSE THE ENVIRONMENT STRING ---
-        # The os.environ object is broken. We get its string representation,
-        # which we know is correct, and parse it into a real dictionary.
-        log.info("Capturing string representation of the faulty environment object...")
+        # --- THE DEFINITIVE FIX: PARSE VALUES DIRECTLY FROM THE ENV STRING ---
+        # The runtime corrupts dictionary objects. We will parse the raw environment
+        # string to extract the exact values we need into simple, stable string variables.
+        log.info("Capturing and parsing the raw environment string...")
         env_string = repr(os.environ)
-        log.info(f"os.environ {os.environ}")
-        log.info(f"env_string {env_string}")
-        
-        # Extract the dictionary literal string from the full 'environ({...})' string
-        start = env_string.find('{')
-        end = env_string.rfind('}') + 1
-        dict_string = env_string[start:end]
-        
-        # Safely evaluate the string literal into a real Python dictionary
-        log.info("Parsing the environment string into a stable dictionary...")
-        app_config = [ast.literal_eval(str(i)) for i in dict_string]  
-        log.info(f"app_config {app_config}")
-        log.info("Environment successfully parsed. Proceeding with a stable config.")
-        # --- From this point on, we ONLY use 'app_config' ---
 
-        # --- OCI UI WORKAROUND (using our clean app_config) ---
+        # This function will safely extract a value for a given key from the raw string
+        def get_value_from_env_string(key, env_str):
+            # Use regex to find "'KEY': 'VALUE'" and capture VALUE.
+            # This is safer than ast.literal_eval in this broken environment.
+            match = re.search(f"'{re.escape(key)}': '([^']*)'", env_str)
+            if match:
+                return match.group(1)
+            return None
+
+        user_ocid = get_value_from_env_string("OCI_USER_OCID", env_string)
+        fingerprint = get_value_from_env_string("OCI_FINGERPRINT", env_string)
+        tenancy_ocid = get_value_from_env_string("OCI_TENANCY_OCID", env_string)
+        region = get_value_from_env_string("OCI_REGION", env_string)
+        raw_key_content = get_value_from_env_string("OCI_PRIVATE_KEY_CONTENT", env_string)
+        log.info("Successfully extracted required values into stable variables.")
+
+        # --- OCI UI WORKAROUND (using our stable variables) ---
         log.info("Reconstructing PEM key format...")
-        raw_key_content = app_config.get("OCI_PRIVATE_KEY_CONTENT", "")
         pem_header = "-----BEGIN RSA PRIVATE KEY-----"
         pem_footer = "-----END RSA PRIVATE KEY-----"
         base64_body = raw_key_content.replace(pem_header, "").replace(pem_footer, "").strip()
         wrapped_body = "\n".join(textwrap.wrap(base64_body, 64))
         private_key_content = f"{pem_header}\n{wrapped_body}\n{pem_footer}\n"
-        log.info("PEM key successfully reconstructed.")
 
         with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".pem") as key_file:
             key_file.write(private_key_content)
             key_file_path = key_file.name
 
-        # --- Build the final config using our clean app_config dictionary ---
+        # --- Build the final config using our stable, simple variables ---
         config = {
-            "user": app_config.get("OCI_USER_OCID"),
+            "user": user_ocid,
             "key_file": key_file_path,
-            "fingerprint": app_config.get("OCI_FINGERPRINT"),
-            "tenancy": app_config.get("OCI_TENANCY_OCID"),
-            "region": app_config.get("OCI_REGION")
+            "fingerprint": fingerprint,
+            "tenancy": tenancy_ocid,
+            "region": region
         }
         
         oci.config.validate_config(config)
@@ -123,12 +117,10 @@ async def handle_invocation(
     log.info("Invocation received.")
     
     try:
-        # For maximum safety, we should re-parse the environment here too,
-        # or pass the app_config down from the lifespan context.
-        # This simpler approach should be sufficient for now.
-        env_snapshot = dict(os.environ)
-        oci_namespace = env_snapshot.get('OCI_NAMESPACE', 'default_namespace') # Add defaults
-        target_bucket = env_snapshot.get('TARGET_BUCKET_NAME', 'default_bucket')
+        # This part of the code is less critical, but direct access is still risky.
+        # Using .get() is a reasonable compromise here.
+        oci_namespace = os.environ.get('OCI_NAMESPACE', 'YOUR_NAMESPACE_HERE')
+        target_bucket = os.environ.get('TARGET_BUCKET_NAME', 'YOUR_BUCKET_HERE')
 
         object_name = f"hello-from-fastapi-{log.extra['invocation_id']}.txt"
         file_content = f"Hello from FastAPI on OCI Functions! This is invocation {log.extra['invocation_id']}."
@@ -143,13 +135,7 @@ async def handle_invocation(
         log.info("Successfully wrote object to bucket.")
         
         return JSONResponse(
-            content={
-                "status": "success",
-                "message": "File written to bucket successfully.",
-                "invocation_id": log.extra['invocation_id'],
-                "bucket": target_bucket,
-                "object_name": object_name
-            },
+            content={ "status": "success", "message": "File written to bucket successfully.", "invocation_id": log.extra['invocation_id'], "bucket": target_bucket, "object_name": object_name },
             status_code=200
         )
     except Exception as e:
