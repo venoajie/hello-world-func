@@ -1,15 +1,15 @@
 
+# main.py
 import json
 import logging
 import os
 import uuid
+import tempfile
 from contextlib import asynccontextmanager
 from typing import Annotated
 
-import pydantic
-import pydantic_settings
-# --- THE FIX: Import Depends from fastapi, not pydantic ---
-from fastapi import FastAPI, Request, Header, HTTPException, Depends
+import oci
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
 
 # --- 1. Structured Logging (from rag-app) ---
@@ -47,20 +47,41 @@ object_storage_client = None
 async def lifespan(app: FastAPI):
     global object_storage_client
     log = logging.LoggerAdapter(logger, {'invocation_id': 'startup'})
-    log.info("Function cold start: Initializing dependencies...")
-    
-    import oci
-    
+    log.info("Function cold start: Initializing dependencies with API Key Auth...")
+
     try:
-        signer = oci.auth.signers.get_resource_principals_signer()
+        # The OCI SDK will automatically read OCI_USER_OCID, OCI_TENANCY_OCID, etc.
+        # from the environment. We only need to handle the private key content.
+        private_key_content = os.environ['OCI_PRIVATE_KEY_CONTENT']
+        
+        # The SDK needs the key as a file, so we write it to a temporary location.
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".pem") as key_file:
+            key_file.write(private_key_content)
+            key_file_path = key_file.name
+
+        config = {
+            "user": os.environ['OCI_USER_OCID'],
+            "key_file": key_file_path,
+            "fingerprint": os.environ['OCI_FINGERPRINT'],
+            "tenancy": os.environ['OCI_TENANCY_OCID'],
+            "region": os.environ['OCI_REGION']
+        }
+        
+        oci.config.validate_config(config)
+        log.info("OCI config validated.")
+        
+        signer = oci.Signer.from_config(config)
         object_storage_client = oci.object_storage.ObjectStorageClient(config={}, signer=signer)
-        log.info("Successfully created OCI Object Storage client.")
+        log.info("Successfully created OCI Object Storage client using API Key.")
+        
+        # Clean up the temporary key file
+        os.remove(key_file_path)
+
     except Exception as e:
         log.critical(f"FATAL: Could not initialize OCI client during startup: {e}", exc_info=True)
         raise
     
     yield
-    
     log.info("Function shutting down.")
 
 def get_os_client():
@@ -71,13 +92,13 @@ def get_os_client():
 # --- 4. FastAPI Application ---
 app = FastAPI(title="Hello World Writer", docs_url=None, redoc_url=None, lifespan=lifespan)
 
+
 @app.post("/")
 async def handle_invocation(
-    # --- THE FIX: Use fastapi.Depends ---
-    settings: Annotated[Settings, Depends(Settings)],
-    log: Annotated[logging.LoggerAdapter, Depends(get_logger)],
+    fn_invoke_id: Annotated[str | None, Header(alias="fn-invoke-id")] = None,
     os_client: Annotated[any, Depends(get_os_client)]
 ):
+
     invocation_id = log.extra['invocation_id']
     log.info("Invocation received.")
     
