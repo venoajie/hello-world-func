@@ -1,11 +1,10 @@
 
-# main.py (PRODUCTION - WITH OCI UI WORKAROUND)
 import json
 import logging
 import os
 import uuid
 import tempfile
-import textwrap # We need this library to reformat the key
+import textwrap
 from contextlib import asynccontextmanager
 from typing import Annotated
 
@@ -20,7 +19,7 @@ class JSONFormatter(logging.Formatter):
             "timestamp": record.created,
             "level": record.levelname,
             "message": record.getMessage(),
-            "invocation_id": getattr(record, 'invocation_id', 'N/A'),
+            "invocation_id": getattr(record, 'invocation_id', 'N'A'),
         }
         return json.dumps(log_record)
 
@@ -31,10 +30,6 @@ handler.setFormatter(JSONFormatter())
 logger.addHandler(handler)
 logger.propagate = False
 
-def get_logger(fn_invoke_id: Annotated[str | None, Header(alias="fn-invoke-id")] = None) -> logging.LoggerAdapter:
-    invocation_id = fn_invoke_id or str(uuid.uuid4())
-    return logging.LoggerAdapter(logger, {'invocation_id': invocation_id})
-
 # --- 2. Core Logic and Dependency Management ---
 object_storage_client = None
 
@@ -44,45 +39,43 @@ async def lifespan(app: FastAPI):
     log = logging.LoggerAdapter(logger, {'invocation_id': 'startup'})
     log.info("Function cold start: Initializing dependencies...")
 
-    # --- NEW DIAGNOSTIC LINE ---
-    log.info(f"DIAGNOSTIC: All visible environments: {(os.environ)}")
-    # --- END DIAGNOSTIC LINE ---
-    
     key_file_path = None
     try:
-        raw_key_content = os.environ['OCI_PRIVATE_KEY_CONTENT']
-        
-        # --- OCI UI WORKAROUND START ---
-        # The OCI Console UI strips newlines from config values. We must reconstruct
-        # the valid, multi-line PEM format from the single-line string we receive.
-        log.info("Reconstructing PEM key format from single-line environment variable...")
-        
-        # Define the standard PEM headers
+        # --- ENVIRONMENT SANITIZATION START ---
+        # The OCI runtime's os.environ object is unreliable for direct key access.
+        # We will copy the required values into a clean, standard Python dictionary
+        # at the very beginning to avoid any issues.
+        log.info("Sanitizing OCI environment variables into a local dictionary...")
+        app_config = {
+            "USER_OCID": os.environ.get("OCI_USER_OCID"),
+            "FINGERPRINT": os.environ.get("OCI_FINGERPRINT"),
+            "TENANCY_OCID": os.environ.get("OCI_TENANCY_OCID"),
+            "REGION": os.environ.get("OCI_REGION"),
+            "RAW_KEY_CONTENT": os.environ.get("OCI_PRIVATE_KEY_CONTENT")
+        }
+        # --- ENVIRONMENT SANITIZATION END ---
+
+        # --- OCI UI WORKAROUND (UNCHANGED) ---
+        # The OCI Console UI strips newlines. We reconstruct the PEM format.
+        log.info("Reconstructing PEM key format...")
         pem_header = "-----BEGIN RSA PRIVATE KEY-----"
         pem_footer = "-----END RSA PRIVATE KEY-----"
-        
-        # Remove headers to isolate the Base64 body
-        base64_body = raw_key_content.replace(pem_header, "").replace(pem_footer, "").strip()
-        
-        # Wrap the Base64 body at 64 characters per line
+        base64_body = app_config["RAW_KEY_CONTENT"].replace(pem_header, "").replace(pem_footer, "").strip()
         wrapped_body = "\n".join(textwrap.wrap(base64_body, 64))
-        
-        # Re-assemble the final, correct, multi-line key
         private_key_content = f"{pem_header}\n{wrapped_body}\n{pem_footer}\n"
         log.info("PEM key successfully reconstructed.")
-        # --- OCI UI WORKAROUND END ---
 
         with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".pem") as key_file:
-            # Write the RECONSTRUCTED key to the file
             key_file.write(private_key_content)
             key_file_path = key_file.name
 
+        # --- Use the CLEAN app_config dictionary from now on ---
         config = {
-            "user": os.environ['OCI_USER_OCID'],
+            "user": app_config["USER_OCID"],
             "key_file": key_file_path,
-            "fingerprint": os.environ['OCI_FINGERPRINT'],
-            "tenancy": os.environ['OCI_TENANCY_OCID'],
-            "region": os.environ['OCI_REGION']
+            "fingerprint": app_config["FINGERPRINT"],
+            "tenancy": app_config["TENANCY_OCID"],
+            "region": app_config["REGION"]
         }
         
         oci.config.validate_config(config)
@@ -102,12 +95,16 @@ async def lifespan(app: FastAPI):
     yield
     log.info("Function shutting down.")
 
+# ... (Rest of the file is unchanged) ...
+def get_logger(fn_invoke_id: Annotated[str | None, Header(alias="fn-invoke-id")] = None) -> logging.LoggerAdapter:
+    invocation_id = fn_invoke_id or str(uuid.uuid4())
+    return logging.LoggerAdapter(logger, {'invocation_id': invocation_id})
+
 def get_os_client():
     if object_storage_client is None:
         raise HTTPException(status_code=503, detail="Service Unavailable: OCI client not initialized.")
     return object_storage_client
 
-# --- 3. FastAPI Application (Unchanged) ---
 app = FastAPI(title="Hello World Writer", docs_url=None, redoc_url=None, lifespan=lifespan)
 
 @app.post("/")
@@ -119,6 +116,8 @@ async def handle_invocation(
     log.info("Invocation received.")
     
     try:
+        # Note: You might want to sanitize these as well if they cause issues,
+        # but they are usually less problematic.
         oci_namespace = os.environ['OCI_NAMESPACE']
         target_bucket = os.environ['TARGET_BUCKET_NAME']
 
