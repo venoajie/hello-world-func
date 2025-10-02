@@ -25,7 +25,8 @@ def handler(ctx, data: io.BytesIO=None):
     OCI Function handler.
     Authenticates using Resource Principals and writes a file to Object Storage.
     """
-    invocation_id = ctx.FnInvokeID()
+    # THIS IS THE CORRECTED LINE
+    invocation_id = ctx.invoke_id
     logger.info(f"Function invoked. Invocation ID: {invocation_id}")
 
     try:
