@@ -25,9 +25,16 @@ def handler(ctx, data: io.BytesIO=None):
     OCI Function handler.
     Authenticates using Resource Principals and writes a file to Object Storage.
     """
-    # THIS IS THE CORRECTED LINE
-    invocation_id = ctx.invoke_id
-    logger.info(f"Function invoked. Invocation ID: {invocation_id}")
+    # --- DIAGNOSTIC STEP ---
+    # Let's inspect the ctx object to see what attributes it actually has.
+    logger.info(f"Inspecting context object. Available attributes: {dir(ctx)}")
+
+    # --- TEMPORARY FIX ---
+    # The lines to get the invocation ID are causing a crash. We will comment them out
+    # for now and use a simple UUID. This will allow the function to complete.
+    # invocation_id = ctx.invoke_id  # <-- THIS LINE IS THE PROBLEM
+    invocation_id = str(uuid.uuid4()) # Use a random UUID as a temporary placeholder
+    logger.info(f"Function invoked. Using temporary Invocation ID: {invocation_id}")
 
     try:
         # 1. Get configuration from function environment variables
@@ -40,7 +47,7 @@ def handler(ctx, data: io.BytesIO=None):
         logger.info("Successfully authenticated with OCI using Resource Principals.")
 
         # 3. Prepare the file to write
-        object_name = f"hello-from-function-{invocation_id}-{uuid.uuid4()}.txt"
+        object_name = f"hello-from-function-{invocation_id}.txt"
         file_content = f"Hello from OCI Function! This is invocation {invocation_id}."
         
         # 4. Execute the write operation
