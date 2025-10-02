@@ -1,93 +1,112 @@
 
-# main.py
 import json
 import logging
 import os
 import uuid
+from contextlib import asynccontextmanager
 from typing import Annotated
 
-import oci
+import pydantic
+import pydantic_settings
 from fastapi import FastAPI, Request, Header, HTTPException
 from fastapi.responses import JSONResponse
 
-# --- OCI and Business Logic (mostly unchanged) ---
+# --- 1. Structured Logging (from rag-app) ---
+class JSONFormatter(logging.Formatter):
+    def format(self, record):
+        log_record = {
+            "timestamp": record.created,
+            "level": record.levelname,
+            "message": record.getMessage(),
+            "invocation_id": getattr(record, 'invocation_id', 'N/A'),
+        }
+        return json.dumps(log_record)
 
-# Configure basic logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+handler = logging.StreamHandler()
+handler.setFormatter(JSONFormatter())
+logger.addHandler(handler)
+logger.propagate = False
 
-def get_env_var(var_name):
-    """Gets a required environment variable or raises an error."""
-    value = os.getenv(var_name)
-    if not value:
-        # In a web server, raising an exception is better
-        raise ValueError(f"FATAL: Required environment variable '{var_name}' is not set.")
-    return value
+def get_logger(fn_invoke_id: Annotated[str | None, Header(alias="fn-invoke-id")] = None) -> logging.LoggerAdapter:
+    invocation_id = fn_invoke_id or str(uuid.uuid4())
+    return logging.LoggerAdapter(logger, {'invocation_id': invocation_id})
 
-def write_object_to_bucket(invocation_id: str):
-    """Authenticates and writes a file to Object Storage."""
-    logger.info(f"Function logic started for invocation ID: {invocation_id}")
+# --- 2. Strict Configuration (from rag-app) ---
+class Settings(pydantic_settings.BaseSettings):
+    OCI_NAMESPACE: str
+    TARGET_BUCKET_NAME: str
+    model_config = pydantic_settings.SettingsConfigDict(extra='ignore')
+
+# --- 3. Core Logic and Dependency Management (Best of Both Worlds) ---
+# Global variable to hold the OCI client, initialized once at startup.
+object_storage_client = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global object_storage_client
+    log = logging.LoggerAdapter(logger, {'invocation_id': 'startup'})
+    log.info("Function cold start: Initializing dependencies...")
     
-    # 1. Get configuration from function environment variables
-    oci_namespace = get_env_var("OCI_NAMESPACE")
-    target_bucket = get_env_var("TARGET_BUCKET_NAME")
+    # THE FIX: We import and initialize the heavy SDK inside the lifespan manager.
+    # This keeps the top-level module import clean and fast.
+    import oci
     
-    # 2. Authenticate using the function's identity (Resource Principal)
-    signer = oci.auth.signers.get_resource_principals_signer()
-    os_client = oci.object_storage.ObjectStorageClient(config={}, signer=signer)
-    logger.info("Successfully authenticated with OCI using Resource Principals.")
-
-    # 3. Prepare the file to write
-    object_name = f"hello-from-fastapi-{invocation_id}.txt"
-    file_content = f"Hello from FastAPI on OCI Functions! This is invocation {invocation_id}."
+    try:
+        signer = oci.auth.signers.get_resource_principals_signer()
+        object_storage_client = oci.object_storage.ObjectStorageClient(config={}, signer=signer)
+        log.info("Successfully created OCI Object Storage client.")
+    except Exception as e:
+        log.critical(f"FATAL: Could not initialize OCI client during startup: {e}", exc_info=True)
+        # Re-raise to prevent the function from starting in a broken state
+        raise
     
-    # 4. Execute the write operation
-    logger.info(f"Attempting to write object '{object_name}' to bucket '{target_bucket}'.")
-    os_client.put_object(
-        namespace_name=oci_namespace,
-        bucket_name=target_bucket,
-        object_name=object_name,
-        put_object_body=file_content.encode('utf-8')
-    )
-    logger.info("Successfully wrote object to bucket.")
-    return {"bucket": target_bucket, "object_name": object_name}
+    yield # The application is now running
+    
+    log.info("Function shutting down.")
 
+# Dependency injector function
+def get_os_client():
+    if object_storage_client is None:
+        raise HTTPException(status_code=503, detail="Service Unavailable: OCI client not initialized.")
+    return object_storage_client
 
-# --- FastAPI Application ---
-
-app = FastAPI(title="Hello World Writer", docs_url=None, redoc_url=None)
+# --- 4. FastAPI Application ---
+app = FastAPI(title="Hello World Writer", docs_url=None, redoc_url=None, lifespan=lifespan)
 
 @app.post("/")
 async def handle_invocation(
-    # The platform passes the invocation ID in this header
-    fn_invoke_id: Annotated[str | None, Header(alias="fn-invoke-id")] = None
+    settings: Annotated[Settings, pydantic.Depends(Settings)],
+    log: Annotated[logging.LoggerAdapter, pydantic.Depends(get_logger)],
+    os_client: Annotated[any, pydantic.Depends(get_os_client)]
 ):
-    """
-    This endpoint is called by the OCI Functions platform for every invocation.
-    """
-    # Use the platform's ID if available, otherwise generate one.
-    invocation_id = fn_invoke_id or str(uuid.uuid4())
+    invocation_id = log.extra['invocation_id']
+    log.info("Invocation received.")
     
     try:
-        result = write_object_to_bucket(invocation_id)
+        object_name = f"hello-from-fastapi-{invocation_id}.txt"
+        file_content = f"Hello from FastAPI on OCI Functions! This is invocation {invocation_id}."
+        
+        log.info(f"Attempting to write object '{object_name}' to bucket '{settings.TARGET_BUCKET_NAME}'.")
+        os_client.put_object(
+            namespace_name=settings.OCI_NAMESPACE,
+            bucket_name=settings.TARGET_BUCKET_NAME,
+            object_name=object_name,
+            put_object_body=file_content.encode('utf-8')
+        )
+        log.info("Successfully wrote object to bucket.")
         
         return JSONResponse(
             content={
                 "status": "success",
                 "message": "File written to bucket successfully.",
                 "invocation_id": invocation_id,
-                **result
+                "bucket": settings.TARGET_BUCKET_NAME,
+                "object_name": object_name
             },
             status_code=200
         )
     except Exception as e:
-        logger.error(f"An error occurred during invocation {invocation_id}: {str(e)}", exc_info=True)
-        # Use HTTPException for standard error responses
-        raise HTTPException(
-            status_code=500,
-            detail=f"An internal error occurred: {str(e)}"
-        )
-
-@app.get("/health")
-async def health_check():
-    return {"status": "ok"}
+        log.error(f"An error occurred during invocation: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"An internal error occurred: {e}")
