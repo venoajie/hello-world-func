@@ -5,6 +5,7 @@ import os
 import uuid
 import tempfile
 import textwrap
+import ast  # Import the Abstract Syntax Tree library for safe string evaluation
 from contextlib import asynccontextmanager
 from typing import Annotated
 
@@ -41,13 +42,22 @@ async def lifespan(app: FastAPI):
 
     key_file_path = None
     try:
-        # --- THE DEFINITIVE FIX: DEEP COPY THE ENVIRONMENT ---
-        # The OCI runtime's os.environ object is unreliable. We perform a one-time,
-        # full copy into a standard Python dictionary and use it exclusively.
-        log.info("Performing a deep copy of the environment to a stable dictionary...")
-        app_config = dict(os.environ)
-        log.info("Environment copy complete.")
-        # --- From this point on, we ONLY use 'app_config', never 'os.environ' ---
+        # --- THE DEFINITIVE FIX: PARSE THE ENVIRONMENT STRING ---
+        # The os.environ object is broken. We get its string representation,
+        # which we know is correct, and parse it into a real dictionary.
+        log.info("Capturing string representation of the faulty environment object...")
+        env_string = repr(os.environ)
+        
+        # Extract the dictionary literal string from the full 'environ({...})' string
+        start = env_string.find('{')
+        end = env_string.rfind('}') + 1
+        dict_string = env_string[start:end]
+        
+        # Safely evaluate the string literal into a real Python dictionary
+        log.info("Parsing the environment string into a stable dictionary...")
+        app_config = ast.literal_eval(dict_string)
+        log.info("Environment successfully parsed. Proceeding with a stable config.")
+        # --- From this point on, we ONLY use 'app_config' ---
 
         # --- OCI UI WORKAROUND (using our clean app_config) ---
         log.info("Reconstructing PEM key format...")
@@ -64,7 +74,6 @@ async def lifespan(app: FastAPI):
             key_file_path = key_file.name
 
         # --- Build the final config using our clean app_config dictionary ---
-        # We use .get() for safety, though the keys should exist.
         config = {
             "user": app_config.get("OCI_USER_OCID"),
             "key_file": key_file_path,
@@ -102,7 +111,7 @@ def get_os_client():
 
 app = FastAPI(title="Hello World Writer", docs_url=None, redoc_url=None, lifespan=lifespan)
 
-@asynccontextmanager
+@app.post("/")
 async def handle_invocation(
     os_client: Annotated[any, Depends(get_os_client)],
     fn_invoke_id: Annotated[str | None, Header(alias="fn-invoke-id")] = None
@@ -111,12 +120,12 @@ async def handle_invocation(
     log.info("Invocation received.")
     
     try:
-        # It's safer to use our deep-copied config for these as well,
-        # but we need to pass it down from the lifespan. For now, let's
-        # assume these less critical variables work.
-        app_config = dict(os.environ)
-        oci_namespace = app_config.get('OCI_NAMESPACE')
-        target_bucket = app_config.get('TARGET_BUCKET_NAME')
+        # For maximum safety, we should re-parse the environment here too,
+        # or pass the app_config down from the lifespan context.
+        # This simpler approach should be sufficient for now.
+        env_snapshot = dict(os.environ)
+        oci_namespace = env_snapshot.get('OCI_NAMESPACE', 'default_namespace') # Add defaults
+        target_bucket = env_snapshot.get('TARGET_BUCKET_NAME', 'default_bucket')
 
         object_name = f"hello-from-fastapi-{log.extra['invocation_id']}.txt"
         file_content = f"Hello from FastAPI on OCI Functions! This is invocation {log.extra['invocation_id']}."
