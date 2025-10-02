@@ -46,7 +46,9 @@ async def lifespan(app: FastAPI):
         def get_value_from_env_string(key, env_str):
             # Use regex to find "'KEY': 'VALUE'" and capture VALUE.
             # This is safer than ast.literal_eval in this broken environment.
+            log.debug(f"env_str {env_str}")
             match = re.search(f"'{re.escape(key)}': '([^']*)'", env_str)
+            log.warning(f"match {match}")
             if match:
                 return match.group(1)
             return None
@@ -57,6 +59,7 @@ async def lifespan(app: FastAPI):
         region = get_value_from_env_string("OCI_REGION", env_string)
         raw_key_content = get_value_from_env_string("OCI_PRIVATE_KEY_CONTENT", env_string)
         log.info("Successfully extracted required values into stable variables.")
+        log.debug(f"user_ocid {user_ocid} fingerprint {fingerprint} tenancy_ocid {tenancy_ocid}")
 
         # --- OCI UI WORKAROUND (using our stable variables) ---
         log.info("Reconstructing PEM key format...")
