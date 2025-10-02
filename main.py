@@ -8,7 +8,8 @@ from typing import Annotated
 
 import pydantic
 import pydantic_settings
-from fastapi import FastAPI, Request, Header, HTTPException
+# --- THE FIX: Import Depends from fastapi, not pydantic ---
+from fastapi import FastAPI, Request, Header, HTTPException, Depends
 from fastapi.responses import JSONResponse
 
 # --- 1. Structured Logging (from rag-app) ---
@@ -40,7 +41,6 @@ class Settings(pydantic_settings.BaseSettings):
     model_config = pydantic_settings.SettingsConfigDict(extra='ignore')
 
 # --- 3. Core Logic and Dependency Management (Best of Both Worlds) ---
-# Global variable to hold the OCI client, initialized once at startup.
 object_storage_client = None
 
 @asynccontextmanager
@@ -49,8 +49,6 @@ async def lifespan(app: FastAPI):
     log = logging.LoggerAdapter(logger, {'invocation_id': 'startup'})
     log.info("Function cold start: Initializing dependencies...")
     
-    # THE FIX: We import and initialize the heavy SDK inside the lifespan manager.
-    # This keeps the top-level module import clean and fast.
     import oci
     
     try:
@@ -59,14 +57,12 @@ async def lifespan(app: FastAPI):
         log.info("Successfully created OCI Object Storage client.")
     except Exception as e:
         log.critical(f"FATAL: Could not initialize OCI client during startup: {e}", exc_info=True)
-        # Re-raise to prevent the function from starting in a broken state
         raise
     
-    yield # The application is now running
+    yield
     
     log.info("Function shutting down.")
 
-# Dependency injector function
 def get_os_client():
     if object_storage_client is None:
         raise HTTPException(status_code=503, detail="Service Unavailable: OCI client not initialized.")
@@ -77,9 +73,10 @@ app = FastAPI(title="Hello World Writer", docs_url=None, redoc_url=None, lifespa
 
 @app.post("/")
 async def handle_invocation(
-    settings: Annotated[Settings, pydantic.Depends(Settings)],
-    log: Annotated[logging.LoggerAdapter, pydantic.Depends(get_logger)],
-    os_client: Annotated[any, pydantic.Depends(get_os_client)]
+    # --- THE FIX: Use fastapi.Depends ---
+    settings: Annotated[Settings, Depends(Settings)],
+    log: Annotated[logging.LoggerAdapter, Depends(get_logger)],
+    os_client: Annotated[any, Depends(get_os_client)]
 ):
     invocation_id = log.extra['invocation_id']
     log.info("Invocation received.")
