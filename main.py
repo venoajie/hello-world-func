@@ -19,7 +19,8 @@ class JSONFormatter(logging.Formatter):
             "timestamp": record.created,
             "level": record.levelname,
             "message": record.getMessage(),
-            "invocation_id": getattr(record, 'invocation_id', 'N'A'),
+            # --- THIS LINE IS FIXED ---
+            "invocation_id": getattr(record, 'invocation_id', 'N/A'),
         }
         return json.dumps(log_record)
 
