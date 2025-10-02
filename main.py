@@ -57,7 +57,7 @@ async def lifespan(app: FastAPI):
         
         # Safely evaluate the string literal into a real Python dictionary
         log.info("Parsing the environment string into a stable dictionary...")
-        app_config = ast.literal_eval(dict_string)
+        app_config = [ast.literal_eval(str(i)) for i in dict_string]  
         log.info(f"app_config {app_config}")
         log.info("Environment successfully parsed. Proceeding with a stable config.")
         # --- From this point on, we ONLY use 'app_config' ---
