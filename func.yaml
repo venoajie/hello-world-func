@@ -1,9 +1,14 @@
 
 schema_version: 20180708
 name: hello-world-writer
-version: 0.0.1
+version: 1.0.0
 runtime: docker
 memory: 256
 timeout: 30
 annotations:
+  # This tells the platform to send an HTTP POST request to the "/" endpoint
+  # of our server running on port 8080 inside the container.
+  fn.oci.oracle.com/fn/invokeEndpoint: "/"
+  
+  # This is still required to enable Resource Principals for authentication.
   oracle.com/oci/auth/principal: "dynamic_group"
