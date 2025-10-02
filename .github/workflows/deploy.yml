@@ -66,26 +66,23 @@ jobs:
         echo "Checking for existing function '${{ env.FUNCTION_NAME }}'..."
         FUNCTION_OCID=$(oci fn function list --application-id "$APP_OCID" --display-name "${{ env.FUNCTION_NAME }}" --query "data[0].id" --raw-output || true)
 
-        # Define the critical annotation
-        ANNOTATION='oracle.com/oci/auth/principal="dynamic_group"'
-
         if [ -z "$FUNCTION_OCID" ]; then
-          echo "Function not found. Creating it for the first time..."
+          echo "Function not found. Creating it for the first time with the correct annotation..."
+          # The 'create' command MUST have the --annotation flag.
           oci fn function create \
             --application-id "$APP_OCID" \
             --display-name "${{ env.FUNCTION_NAME }}" \
             --image "${{ env.FULL_IMAGE_NAME }}" \
             --memory-in-mbs 512 \
             --timeout-in-seconds 30 \
-            --annotation "$ANNOTATION" # <-- ADDED FOR CREATE
+            --annotation 'oracle.com/oci/auth/principal="dynamic_group"'
         else
-          echo "Function found with OCID: $FUNCTION_OCID. Updating it..."
+          echo "Function found with OCID: $FUNCTION_OCID. Updating its image..."
+          # The 'update' command MUST NOT have the --annotation flag.
           oci fn function update \
             --function-id "$FUNCTION_OCID" \
             --image "${{ env.FULL_IMAGE_NAME }}" \
-            --memory-in-mbs 512 \
-            --force \
-            --annotation "$ANNOTATION" # <-- ADDED FOR UPDATE
+            --memory-in-mbs 512
         fi
         
         echo "✅ Deployment successful!"
