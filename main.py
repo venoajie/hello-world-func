@@ -47,6 +47,8 @@ async def lifespan(app: FastAPI):
         # which we know is correct, and parse it into a real dictionary.
         log.info("Capturing string representation of the faulty environment object...")
         env_string = repr(os.environ)
+        log.info(f"os.environ {os.environ}")
+        log.info(f"env_string {env_string}")
         
         # Extract the dictionary literal string from the full 'environ({...})' string
         start = env_string.find('{')
@@ -56,6 +58,7 @@ async def lifespan(app: FastAPI):
         # Safely evaluate the string literal into a real Python dictionary
         log.info("Parsing the environment string into a stable dictionary...")
         app_config = ast.literal_eval(dict_string)
+        log.info(f"app_config {app_config}")
         log.info("Environment successfully parsed. Proceeding with a stable config.")
         # --- From this point on, we ONLY use 'app_config' ---
 
