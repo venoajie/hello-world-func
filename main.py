@@ -48,8 +48,6 @@ async def lifespan(app: FastAPI):
             Safely extracts a value for a given key from the raw string representation
             of os.environ using a regular expression.
             """
-            # This regex finds "'KEY': 'VALUE'" and captures VALUE.
-            # It is safer than ast.literal_eval in a potentially broken environment.
             match = re.search(f"'{re.escape(key)}': '([^']*)'", env_str)
             if match:
                 return match.group(1)
@@ -61,8 +59,15 @@ async def lifespan(app: FastAPI):
         region = get_value_from_env_string("OCI_REGION", env_string)
         raw_key_content = get_value_from_env_string("OCI_PRIVATE_KEY_CONTENT", env_string)
 
+        # --- ENHANCED LOGGING: Provide evidence that parsing was successful ---
+        log.info(f"DIAGNOSTIC: Parsed User OCID: {'present' if user_ocid else 'missing'}")
+        log.info(f"DIAGNOSTIC: Parsed Fingerprint: {'present' if fingerprint else 'missing'}")
+        log.info(f"DIAGNOSTIC: Parsed Tenancy OCID: {'present' if tenancy_ocid else 'missing'}")
+        log.info(f"DIAGNOSTIC: Parsed Region: {region if region else 'missing'}")
+        log.info(f"DIAGNOSTIC: Parsed Key Content: {'present' if raw_key_content else 'missing'}")
+        
         if not all([user_ocid, fingerprint, tenancy_ocid, region, raw_key_content]):
-            log.critical(f"FATAL: Could not parse one or more required OCI credentials from the environment string. Raw env: {env_string}")
+            log.critical(f"FATAL: Could not parse one or more required OCI credentials from the environment string.")
             raise ValueError("Failed to extract necessary OCI credentials from environment.")
             
         log.info("Successfully extracted required values into stable variables.")
@@ -71,7 +76,6 @@ async def lifespan(app: FastAPI):
         log.info("Reconstructing PEM key format...")
         pem_header = "-----BEGIN RSA PRIVATE KEY-----"
         pem_footer = "-----END RSA PRIVATE KEY-----"
-        # Clean up any artifacts from the string representation
         base64_body = raw_key_content.replace(pem_header, "").replace(pem_footer, "").strip()
         wrapped_body = "\n".join(textwrap.wrap(base64_body, 64))
         private_key_content = f"{pem_header}\n{wrapped_body}\n{pem_footer}\n"
@@ -88,20 +92,21 @@ async def lifespan(app: FastAPI):
             "tenancy": tenancy_ocid,
             "region": region
         }
+        log.info(f"DIAGNOSTIC: Assembled config with keys: {list(config.keys())}")
         
         oci.config.validate_config(config)
-        log.info("OCI config validated.")
+        log.info("OCI config dictionary validated successfully.")
         
-        signer = oci.Signer.from_config(config)
-        object_storage_client = oci.object_storage.ObjectStorageClient(config={}, signer=signer)
+        # --- CORRECTED CLIENT INSTANTIATION ---
+        # The original code passed `config={}` which caused the error.
+        # This now passes the correct, validated `config` object.
+        object_storage_client = oci.object_storage.ObjectStorageClient(config=config)
         log.info("Successfully created OCI Object Storage client.")
         
     except Exception as e:
         log.critical(f"FATAL: Could not initialize OCI client during startup: {e}", exc_info=True)
-        # Re-raise to ensure the function fails to start if initialization fails
         raise
     finally:
-        # Ensure temporary key file is always cleaned up
         if key_file_path and os.path.exists(key_file_path):
             os.remove(key_file_path)
     
