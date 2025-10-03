@@ -5,7 +5,7 @@ import os
 import uuid
 import tempfile
 import textwrap
-import re  # Import the regular expression library
+import re
 from contextlib import asynccontextmanager
 from typing import Annotated
 
@@ -36,19 +36,21 @@ async def lifespan(app: FastAPI):
 
     key_file_path = None
     try:
-        # --- THE DEFINITIVE FIX: PARSE VALUES DIRECTLY FROM THE ENV STRING ---
-        # The runtime corrupts dictionary objects. We will parse the raw environment
-        # string to extract the exact values we need into simple, stable string variables.
-        log.info("Capturing and parsing the raw environment string...")
+        # --- THE DEFINITIVE FIX: PARSE VALUES DIRECTLY FROM THE RAW ENV STRING ---
+        # The runtime can corrupt dictionary-like access to os.environ.
+        # This workaround captures the raw string representation and parses it to
+        # extract the exact values into simple, stable string variables.
+        log.info("Capturing and parsing the raw environment string to bypass runtime instability.")
         env_string = repr(os.environ)
 
-        # This function will safely extract a value for a given key from the raw string
-        def get_value_from_env_string(key, env_str):
-            # Use regex to find "'KEY': 'VALUE'" and capture VALUE.
-            # This is safer than ast.literal_eval in this broken environment.
-            log.warning(f"env_str {env_str}")
+        def get_value_from_env_string(key: str, env_str: str) -> str | None:
+            """
+            Safely extracts a value for a given key from the raw string representation
+            of os.environ using a regular expression.
+            """
+            # This regex finds "'KEY': 'VALUE'" and captures VALUE.
+            # It is safer than ast.literal_eval in a potentially broken environment.
             match = re.search(f"'{re.escape(key)}': '([^']*)'", env_str)
-            log.warning(f"match {match}")
             if match:
                 return match.group(1)
             return None
@@ -58,13 +60,18 @@ async def lifespan(app: FastAPI):
         tenancy_ocid = get_value_from_env_string("OCI_TENANCY_OCID", env_string)
         region = get_value_from_env_string("OCI_REGION", env_string)
         raw_key_content = get_value_from_env_string("OCI_PRIVATE_KEY_CONTENT", env_string)
-        log.info("Successfully extracted required values into stable variables.")
-        log.warning(f"user_ocid {user_ocid} fingerprint {fingerprint} tenancy_ocid {tenancy_ocid}")
 
-        # --- OCI UI WORKAROUND (using our stable variables) ---
+        if not all([user_ocid, fingerprint, tenancy_ocid, region, raw_key_content]):
+            log.critical(f"FATAL: Could not parse one or more required OCI credentials from the environment string. Raw env: {env_string}")
+            raise ValueError("Failed to extract necessary OCI credentials from environment.")
+            
+        log.info("Successfully extracted required values into stable variables.")
+
+        # --- Reconstruct PEM key from the safely extracted content ---
         log.info("Reconstructing PEM key format...")
         pem_header = "-----BEGIN RSA PRIVATE KEY-----"
         pem_footer = "-----END RSA PRIVATE KEY-----"
+        # Clean up any artifacts from the string representation
         base64_body = raw_key_content.replace(pem_header, "").replace(pem_footer, "").strip()
         wrapped_body = "\n".join(textwrap.wrap(base64_body, 64))
         private_key_content = f"{pem_header}\n{wrapped_body}\n{pem_footer}\n"
@@ -87,19 +94,20 @@ async def lifespan(app: FastAPI):
         
         signer = oci.Signer.from_config(config)
         object_storage_client = oci.object_storage.ObjectStorageClient(config={}, signer=signer)
-        log.info("Successfully created OCI Object Storage client using API Key.")
+        log.info("Successfully created OCI Object Storage client.")
         
     except Exception as e:
         log.critical(f"FATAL: Could not initialize OCI client during startup: {e}", exc_info=True)
+        # Re-raise to ensure the function fails to start if initialization fails
         raise
     finally:
+        # Ensure temporary key file is always cleaned up
         if key_file_path and os.path.exists(key_file_path):
             os.remove(key_file_path)
     
     yield
     log.info("Function shutting down.")
 
-# ... (Rest of the file is unchanged) ...
 def get_logger(fn_invoke_id: Annotated[str | None, Header(alias="fn-invoke-id")] = None) -> logging.LoggerAdapter:
     invocation_id = fn_invoke_id or str(uuid.uuid4())
     return logging.LoggerAdapter(logger, {'invocation_id': invocation_id})
@@ -120,15 +128,14 @@ async def handle_invocation(
     log.info("Invocation received.")
     
     try:
-        # This part of the code is less critical, but direct access is still risky.
-        # Using .get() is a reasonable compromise here.
-        oci_namespace = os.environ.get('OCI_NAMESPACE', 'YOUR_NAMESPACE_HERE')
-        target_bucket = os.environ.get('TARGET_BUCKET_NAME', 'YOUR_BUCKET_HERE')
+        # Use the safer .get() method for non-critical environment variable access.
+        oci_namespace = os.environ.get('OCI_NAMESPACE', 'YOUR_DEFAULT_NAMESPACE')
+        target_bucket = os.environ.get('TARGET_BUCKET_NAME', 'YOUR_DEFAULT_BUCKET')
 
         object_name = f"hello-from-fastapi-{log.extra['invocation_id']}.txt"
         file_content = f"Hello from FastAPI on OCI Functions! This is invocation {log.extra['invocation_id']}."
         
-        log.info(f"Attempting to write object '{object_name}' to bucket '{target_bucket}'.")
+        log.info(f"Attempting to write object '{object_name}' to bucket '{target_bucket}' in namespace '{oci_namespace}'.")
         os_client.put_object(
             namespace_name=oci_namespace,
             bucket_name=target_bucket,
@@ -141,6 +148,9 @@ async def handle_invocation(
             content={ "status": "success", "message": "File written to bucket successfully.", "invocation_id": log.extra['invocation_id'], "bucket": target_bucket, "object_name": object_name },
             status_code=200
         )
+    except oci.exceptions.ServiceError as e:
+        log.error(f"OCI Service Error during invocation: {e.status} {e.message}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"OCI Error: {e.message}")
     except Exception as e:
-        log.error(f"An error occurred during invocation: {e}", exc_info=True)
+        log.error(f"An unexpected error occurred during invocation: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"An internal error occurred: {e}")
