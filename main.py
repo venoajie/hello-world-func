@@ -54,13 +54,15 @@ async def lifespan(app: FastAPI):
         if not all([user_ocid, fingerprint, tenancy_ocid, region, raw_key_content]):
             log.critical(f"FATAL: Could not parse one or more required OCI credentials from the environment string.")
             raise ValueError("Failed to extract necessary OCI credentials from environment.")
-            
-        log.info("Successfully extracted required values into stable variables.")
 
-        log.info("Reconstructing PEM key format...")
+        # --- CRITICAL FIX for OCI Console newline stripping bug ---
+        # The OCI Console removes newlines. This code reconstructs the proper PEM format.
+        log.info("Reconstructing PEM key format to handle platform newline stripping.")
         pem_header = "-----BEGIN RSA PRIVATE KEY-----"
         pem_footer = "-----END RSA PRIVATE KEY-----"
+        # The key content from the environment is a single line without headers/footers.
         base64_body = raw_key_content.replace(pem_header, "").replace(pem_footer, "").strip()
+        # Re-wrap the single line of base64 text into 64-character lines.
         wrapped_body = "\n".join(textwrap.wrap(base64_body, 64))
         private_key_content = f"{pem_header}\n{wrapped_body}\n{pem_footer}\n"
 
@@ -75,22 +77,23 @@ async def lifespan(app: FastAPI):
             "tenancy": tenancy_ocid,
             "region": region
         }
-        
+
         oci.config.validate_config(config)
         log.info("OCI config dictionary validated successfully.")
-        
+
         object_storage_client = oci.object_storage.ObjectStorageClient(config=config)
         log.info("Successfully created OCI Object Storage client.")
-        
+
     except Exception as e:
         log.critical(f"FATAL: Could not initialize OCI client during startup: {e}", exc_info=True)
         raise
     finally:
         if key_file_path and os.path.exists(key_file_path):
             os.remove(key_file_path)
-    
+
     yield
     log.info("Function shutting down.")
+
 
 def get_logger(fn_invoke_id: Annotated[str | None, Header(alias="fn-invoke-id")] = None) -> logging.LoggerAdapter:
     invocation_id = fn_invoke_id or str(uuid.uuid4())
@@ -103,8 +106,6 @@ def get_os_client():
 
 app = FastAPI(title="Hello World Writer", docs_url=None, redoc_url=None, lifespan=lifespan)
 
-# CRITICAL FIX: The route has been changed from "/" to "/call" to match the
-# default invocation path used by the OCI Functions platform.
 @app.post("/call")
 async def handle_invocation(
     os_client: Annotated[any, Depends(get_os_client)],
@@ -112,14 +113,14 @@ async def handle_invocation(
 ):
     log = get_logger(fn_invoke_id)
     log.info("Invocation received.")
-    
+
     try:
         oci_namespace = os.environ.get('OCI_NAMESPACE', 'YOUR_DEFAULT_NAMESPACE')
         target_bucket = os.environ.get('TARGET_BUCKET_NAME', 'YOUR_DEFAULT_BUCKET')
 
         object_name = f"hello-from-fastapi-{log.extra['invocation_id']}.txt"
         file_content = f"Hello from FastAPI on OCI Functions! This is invocation {log.extra['invocation_id']}."
-        
+
         log.info(f"Attempting to write object '{object_name}' to bucket '{target_bucket}' in namespace '{oci_namespace}'.")
         os_client.put_object(
             namespace_name=oci_namespace,
@@ -128,7 +129,7 @@ async def handle_invocation(
             put_object_body=file_content.encode('utf-8')
         )
         log.info("Successfully wrote object to bucket.")
-        
+
         return JSONResponse(
             content={ "status": "success", "message": "File written to bucket successfully.", "invocation_id": log.extra['invocation_id'], "bucket": target_bucket, "object_name": object_name },
             status_code=200
