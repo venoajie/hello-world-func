@@ -7,8 +7,5 @@ runtime: docker
 memory: 1024
 timeout: 120
 annotations:
-  fn.oci.oracle.com/fn/invokeEndpoint: "/"
-  # CRITICAL FIX: The following line has been removed.
-  # As per the operations manual, Resource Principals are non-functional for this setup.
-  # The application uses API Key auth, so this annotation must not be present.
-  # oracle.com/oci/auth/principal: "dynamic_group"
+  # BEST PRACTICE: Aligning the annotation with the actual endpoint used.
+  fn.oci.oracle.com/fn/invokeEndpoint: "/call"
