@@ -1,19 +1,28 @@
 
-FROM python:3.12.3-slim-bookworm AS builder
+# Stage 1: Builder - where we install dependencies
+FROM python:3.12.3-slim-bookworm as builder
 
-# Set the working directory in the container
 WORKDIR /app
 
 # Copy the requirements file and install dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
-# Copy the application code into the container
+# Stage 2: Runtime - the final, lean image
+FROM python:3.12.3-slim-bookworm
+
+WORKDIR /app
+
+# Copy installed dependencies from the builder stage
+COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+
+# Copy the application code
 COPY main.py .
 
-# Expose the port the app will run on. OCI Functions expects 8080.
-EXPOSE 8080
-
-# The command to run the FastAPI application using uvicorn
-# --host 0.0.0.0 makes the server accessible from outside the container
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]
+# CRITICAL FIX: This command launches uvicorn and explicitly tells it to listen
+# on the Unix Domain Socket provided by the OCI Functions platform. This is the
+# definitive fix for the 504 timeout. The EXPOSE directive is not needed.
+# The default socket path for OCI functions is /tmp/iofs/lsnr.sock
+CMD [ "uvicorn", "main:app", "--uds", "/tmp/iofs/lsnr.sock" ]
