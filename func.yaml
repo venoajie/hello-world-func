@@ -4,8 +4,8 @@ schema_version: 20180708
 name: hello-world-writer
 version: 2.0.0
 runtime: docker
-memory: 512 # Increased memory for better performance with the OCI SDK
-timeout: 30
+memory: 1024 # Increased memory for better performance with the OCI SDK
+timeout: 120
 annotations:
   fn.oci.oracle.com/fn/invokeEndpoint: "/"
   oracle.com/oci/auth/principal: "dynamic_group"
