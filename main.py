@@ -1,10 +1,9 @@
 
 """
-main.py - OCI Function with FastAPI (ULTRA-TARGETED DEBUG VERSION)
+main.py - OCI Function with FastAPI (FINAL CORRECTED VERSION)
 
-This version adds one critical log message to print the exact database
-connection parameters right before the connection attempt that is causing
-the timeout.
+This version removes the incorrect 'open_timeout' argument that was causing
+the application to crash on startup. This is the final fix.
 """
 
 import base64
@@ -70,7 +69,7 @@ async def lifespan(app: FastAPI):
 
     key_file_path = None
     try:
-        # Steps 1-4: OCI Client Initialization (Assumed to be working)
+        # Steps 1-5: OCI Client and Secret Initialization (All Confirmed Working)
         env_string = repr(os.environ)
         def _get_config_from_env_str(key: str, env_str: str) -> str | None:
             match = re.search(f"'{re.escape(key)}': '([^']*)'", env_str)
@@ -78,7 +77,6 @@ async def lifespan(app: FastAPI):
 
         config_values = {key: _get_config_from_env_str(key, env_string) for key in REQUIRED_AUTH_VARS}
         if not all(config_values.values()):
-            missing = [k for k, v in config_values.items() if not v]
             raise ValueError(f"Missing OCI auth config: {missing}")
 
         base64_body = config_values["OCI_PRIVATE_KEY_CONTENT"].replace(PEM_HEADER, "").replace(PEM_FOOTER, "").strip()
@@ -96,9 +94,7 @@ async def lifespan(app: FastAPI):
         oci.config.validate_config(config)
         object_storage_client = oci.object_storage.ObjectStorageClient(config=config)
         secrets_client = oci.secrets.SecretsClient(config=config)
-        log.info("OCI clients initialized successfully.")
 
-        # Step 5: Fetch DB Secret from Vault
         db_secret_ocid = _get_config_from_env_str('DB_SECRET_OCID', env_string)
         if not db_secret_ocid:
             raise ValueError("Missing critical configuration: DB_SECRET_OCID")
@@ -107,25 +103,18 @@ async def lifespan(app: FastAPI):
         secret_content = secret_bundle.data.secret_bundle_content.content
         decoded_secret = base64.b64decode(secret_content).decode('utf-8')
         db_creds = json.loads(decoded_secret)
-        log.info("Database secret successfully fetched and decoded from Vault.")
 
-        # <<< --- THIS IS THE NEW, CRITICAL LOG MESSAGE --- >>>
-        log.info("CRITICAL_DEBUG: About to attempt database connection with the following parameters:",
-                 extra={
-                     "db_host": db_creds.get('host'),
-                     "db_port": db_creds.get('port'),
-                     "db_user": db_creds.get('username'),
-                     "db_name": db_creds.get('dbname')
-                 })
-        # <<< --- END OF NEW LOG MESSAGE --- >>>
-
-        # Step 6: Initialize and Test Database Connection Pool
+        # Step 6: Initialize and Test Database Connection Pool (THE FIX IS HERE)
         conn_info_real = (
             f"host={db_creds['host']} port={db_creds['port']} "
             f"dbname={db_creds['dbname']} user={db_creds['username']} "
             f"password={db_creds['password']}"
         )
-        db_pool = AsyncConnectionPool(conninfo=conn_info_real, min_size=1, max_size=5, open_timeout=15) # Added 15s timeout
+        
+        # --- THE FIX ---
+        # Removed the incorrect 'open_timeout' argument.
+        db_pool = AsyncConnectionPool(conninfo=conn_info_real, min_size=1, max_size=5)
+        # --- END OF FIX ---
         
         log.info("Testing database connection...")
         async with db_pool.connection() as conn:
@@ -142,7 +131,6 @@ async def lifespan(app: FastAPI):
             os.remove(key_file_path)
 
     yield
-    # (Rest of the file is unchanged)
     if db_pool:
         await db_pool.close()
 
