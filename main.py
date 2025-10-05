@@ -69,7 +69,7 @@ logger.propagate = False
 
 # --- Global Clients & Connection Pool ---
 object_storage_client = None
-vault_client = None
+secrets_client = None # CORRECTED: Renamed for clarity
 db_pool = None
 
 @asynccontextmanager
@@ -78,7 +78,7 @@ async def lifespan(app: FastAPI):
     Handles application startup logic. This is where OCI clients and the DB pool
     are initialized using the mandatory API Key authentication method.
     """
-    global object_storage_client, vault_client, db_pool
+    global object_storage_client, secrets_client, db_pool
     log = logging.LoggerAdapter(logger, {'invocation_id': 'startup'})
     log.info("Function cold start: Initializing OCI clients and DB pool...")
 
@@ -124,8 +124,9 @@ async def lifespan(app: FastAPI):
         oci.config.validate_config(config)
         # --- Initialize OCI Service Clients using the validated config ---
         object_storage_client = oci.object_storage.ObjectStorageClient(config=config)
-        vault_client = oci.vault.VaultsClient(config=config)
-        log.info("Successfully created OCI Object Storage and Vault clients via API Key.")
+        # CORRECTED: Initialize the correct client for reading secrets
+        secrets_client = oci.secrets.SecretsClient(config=config)
+        log.info("Successfully created OCI Object Storage and Secrets clients via API Key.")
 
         # --- Fetch DB Credentials from Vault ---
         log.info("Fetching database credentials from OCI Vault.")
@@ -133,7 +134,8 @@ async def lifespan(app: FastAPI):
         if not db_secret_ocid:
             raise ValueError("Missing critical configuration: DB_SECRET_OCID")
 
-        secret_bundle = vault_client.get_secret_bundle(secret_id=db_secret_ocid)
+        # CORRECTED: Call the method on the correct client object
+        secret_bundle = secrets_client.get_secret_bundle(secret_id=db_secret_ocid)
         secret_content = secret_bundle.data.secret_bundle_content.content
         decoded_secret = base64.b64decode(secret_content).decode('utf-8')
         db_creds = json.loads(decoded_secret)
