@@ -1,10 +1,10 @@
 
 """
-main.py - OCI Function with FastAPI (SUPER-DEBUG VERSION)
+main.py - OCI Function with FastAPI (ULTRA-TARGETED DEBUG VERSION)
 
-This version has been heavily instrumented with verbose logging in the startup
-sequence to diagnose the root cause of the FunctionInvokeContainerInitTimeout.
-Every critical step will now print a detailed log message.
+This version adds one critical log message to print the exact database
+connection parameters right before the connection attempt that is causing
+the timeout.
 """
 
 import base64
@@ -15,7 +15,7 @@ import re
 import tempfile
 import textwrap
 import uuid
-import traceback # <-- Added for detailed exception logging
+import traceback
 from contextlib import asynccontextmanager
 from typing import Annotated
 
@@ -25,7 +25,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
 from psycopg_pool import AsyncConnectionPool
 
-# --- Constants for Configuration and Keys ---
+# --- Constants for Configuration and Keys (No changes) ---
 REQUIRED_AUTH_VARS = [
     "OCI_USER_OCID", "OCI_FINGERPRINT", "OCI_TENANCY_OCID",
     "OCI_REGION", "OCI_PRIVATE_KEY_CONTENT"
@@ -34,10 +34,8 @@ PEM_HEADER = "-----BEGIN RSA PRIVATE KEY-----"
 PEM_FOOTER = "-----END RSA PRIVATE KEY-----"
 
 
-# --- Logging Setup ---
-# Using a more robust JSON formatter for clarity
+# --- Logging Setup (No changes) ---
 class JSONFormatter(logging.Formatter):
-    """Formats log records as a single JSON line."""
     def format(self, record):
         log_record = {
             "timestamp": record.created,
@@ -51,7 +49,6 @@ class JSONFormatter(logging.Formatter):
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-# Clear any existing handlers to prevent duplicate logs
 if logger.hasHandlers():
     logger.handlers.clear()
 handler = logging.StreamHandler()
@@ -60,132 +57,94 @@ logger.addHandler(handler)
 logger.propagate = False
 
 
-# --- Global Clients & Connection Pool ---
+# --- Global Clients & Connection Pool (No changes) ---
 object_storage_client = None
 secrets_client = None
 db_pool = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    Handles application startup logic with SUPER-VERBOSE logging.
-    """
     global object_storage_client, secrets_client, db_pool
     log = logging.LoggerAdapter(logger, {'invocation_id': 'startup'})
     log.info("--- LIFESPAN START: BEGINNING INITIALIZATION ---")
 
     key_file_path = None
     try:
-        # --- DEBUG STEP 1: CAPTURE AND LOG RAW ENVIRONMENT ---
-        log.info("DEBUG: Capturing raw os.environ string...")
+        # Steps 1-4: OCI Client Initialization (Assumed to be working)
         env_string = repr(os.environ)
-        log.info(f"DEBUG: Raw environment string captured. Length: {len(env_string)}")
-
         def _get_config_from_env_str(key: str, env_str: str) -> str | None:
-            """Safely extracts a value from the raw os.environ string."""
-            log.info(f"DEBUG: Parsing for key: '{key}'")
             match = re.search(f"'{re.escape(key)}': '([^']*)'", env_str)
-            if match:
-                log.info(f"DEBUG: Found value for '{key}'.")
-                return match.group(1)
-            else:
-                log.warning(f"DEBUG: Key '{key}' NOT FOUND in environment string.")
-                return None
+            return match.group(1) if match else None
 
-        config_values = {
-            key: _get_config_from_env_str(key, env_string)
-            for key in REQUIRED_AUTH_VARS
-        }
-
+        config_values = {key: _get_config_from_env_str(key, env_string) for key in REQUIRED_AUTH_VARS}
         if not all(config_values.values()):
             missing = [k for k, v in config_values.items() if not v]
-            log.critical(f"FATAL: Missing critical OCI configuration from environment: {missing}")
-            raise ValueError(f"Missing critical OCI configuration: {missing}")
-        log.info("DEBUG: All required OCI auth variables parsed successfully.")
+            raise ValueError(f"Missing OCI auth config: {missing}")
 
-        # --- DEBUG STEP 2: RECONSTRUCT AND LOG PEM KEY ---
-        log.info("DEBUG: Reconstructing PEM private key...")
         base64_body = config_values["OCI_PRIVATE_KEY_CONTENT"].replace(PEM_HEADER, "").replace(PEM_FOOTER, "").strip()
         wrapped_body = "\n".join(textwrap.wrap(base64_body, 64))
         private_key_content = f"{PEM_HEADER}\n{wrapped_body}\n{PEM_FOOTER}\n"
-        log.info("DEBUG: PEM key reconstructed successfully.")
-
         with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".pem") as key_file:
             key_file.write(private_key_content)
             key_file_path = key_file.name
-        log.info(f"DEBUG: Wrote PEM key to temporary file: {key_file_path}")
 
-        # --- DEBUG STEP 3: BUILD, LOG, AND VALIDATE OCI CONFIG ---
         config = {
-            "user": config_values["OCI_USER_OCID"],
-            "key_file": key_file_path,
-            "fingerprint": config_values["OCI_FINGERPRINT"],
-            "tenancy": config_values["OCI_TENANCY_OCID"],
+            "user": config_values["OCI_USER_OCID"], "key_file": key_file_path,
+            "fingerprint": config_values["OCI_FINGERPRINT"], "tenancy": config_values["OCI_TENANCY_OCID"],
             "region": config_values["OCI_REGION"]
         }
-        log.info(f"DEBUG: Final OCI config dictionary prepared for validation: {json.dumps(config)}")
         oci.config.validate_config(config)
-        log.info("DEBUG: OCI config validation successful.")
-
-        # --- DEBUG STEP 4: INITIALIZE OCI CLIENTS ---
-        log.info("DEBUG: Initializing OCI Object Storage client...")
         object_storage_client = oci.object_storage.ObjectStorageClient(config=config)
-        log.info("DEBUG: OCI Object Storage client initialized.")
-        log.info("DEBUG: Initializing OCI Secrets client...")
         secrets_client = oci.secrets.SecretsClient(config=config)
-        log.info("DEBUG: OCI Secrets client initialized.")
+        log.info("OCI clients initialized successfully.")
 
-        # --- DEBUG STEP 5: FETCH DB SECRET FROM VAULT ---
+        # Step 5: Fetch DB Secret from Vault
         db_secret_ocid = _get_config_from_env_str('DB_SECRET_OCID', env_string)
         if not db_secret_ocid:
-            log.critical("FATAL: Missing critical configuration: DB_SECRET_OCID")
             raise ValueError("Missing critical configuration: DB_SECRET_OCID")
-        log.info(f"DEBUG: Attempting to fetch secret from Vault using OCID: {db_secret_ocid}")
 
         secret_bundle = secrets_client.get_secret_bundle(secret_id=db_secret_ocid)
         secret_content = secret_bundle.data.secret_bundle_content.content
         decoded_secret = base64.b64decode(secret_content).decode('utf-8')
         db_creds = json.loads(decoded_secret)
-        log.info("DEBUG: Database secret successfully fetched and decoded from Vault.")
+        log.info("Database secret successfully fetched and decoded from Vault.")
 
-        # --- DEBUG STEP 6: INITIALIZE AND TEST DATABASE CONNECTION POOL ---
-        conn_info_safe = (
-            f"host={db_creds['host']} port={db_creds['port']} "
-            f"dbname={db_creds['dbname']} user={db_creds['username']} "
-            f"password=***REDACTED***"
-        )
+        # <<< --- THIS IS THE NEW, CRITICAL LOG MESSAGE --- >>>
+        log.info("CRITICAL_DEBUG: About to attempt database connection with the following parameters:",
+                 extra={
+                     "db_host": db_creds.get('host'),
+                     "db_port": db_creds.get('port'),
+                     "db_user": db_creds.get('username'),
+                     "db_name": db_creds.get('dbname')
+                 })
+        # <<< --- END OF NEW LOG MESSAGE --- >>>
+
+        # Step 6: Initialize and Test Database Connection Pool
         conn_info_real = (
             f"host={db_creds['host']} port={db_creds['port']} "
             f"dbname={db_creds['dbname']} user={db_creds['username']} "
             f"password={db_creds['password']}"
         )
-        log.info(f"DEBUG: Initializing database connection pool with: {conn_info_safe}")
-        db_pool = AsyncConnectionPool(conninfo=conn_info_real, min_size=1, max_size=5)
+        db_pool = AsyncConnectionPool(conninfo=conn_info_real, min_size=1, max_size=5, open_timeout=15) # Added 15s timeout
         
-        log.info("DEBUG: Testing database connection...")
+        log.info("Testing database connection...")
         async with db_pool.connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute("SELECT 1")
-                log.info("DEBUG: Database connection test successful.")
-
+        log.info("Database connection test successful.")
         log.info("--- LIFESPAN SUCCESS: ALL DEPENDENCIES INITIALIZED ---")
 
     except Exception as e:
-        # THIS IS THE MOST IMPORTANT PART - CATCH ANY UNEXPECTED CRASH
         log.critical(f"--- FATAL LIFESPAN CRASH: An unexpected error occurred during startup: {e}", exc_info=True)
-        raise  # Re-raise the exception to ensure the function fails properly
+        raise
     finally:
         if key_file_path and os.path.exists(key_file_path):
             os.remove(key_file_path)
-            log.info(f"DEBUG: Cleaned up temporary key file: {key_file_path}")
 
     yield
-
+    # (Rest of the file is unchanged)
     if db_pool:
         await db_pool.close()
-        log.info("Database connection pool closed.")
-    log.info("Function shutting down.")
-
 
 # --- FastAPI Dependency Injection and Application (No changes) ---
 def get_logger(fn_invoke_id: Annotated[str | None, Header(alias="fn-invoke-id")] = None) -> logging.LoggerAdapter:
@@ -215,7 +174,6 @@ async def handle_invocation(
     db_version = None
     try:
         try:
-            # Using standard os.getenv for runtime vars is safer
             oci_namespace = os.getenv('OCI_NAMESPACE')
             target_bucket = os.getenv('TARGET_BUCKET_NAME')
             if not oci_namespace or not target_bucket:
