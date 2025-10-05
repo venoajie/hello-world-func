@@ -21,7 +21,7 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 # Copy the application code
 COPY main.py .
 
-# CRITICAL FIX: This command launches uvicorn and explicitly tells it to listen
+# This command launches uvicorn and explicitly tells it to listen
 # on the Unix Domain Socket provided by the OCI Functions platform. This is the
 # definitive fix for the 504 timeout. The EXPOSE directive is not needed.
 # The default socket path for OCI functions is /tmp/iofs/lsnr.sock

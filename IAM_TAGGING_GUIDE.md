@@ -4,51 +4,54 @@
 This document defines the canonical tagging strategy for this OCI tenancy. Its purpose is to ensure consistent metadata for cost management, automation, and security.
 
 ## 1. Core Principles
-
-1.  **Always Use Defined Tags:** Free-form tags are forbidden due to their inconsistency. All tags must belong to the `Tenancy-Management` namespace.
-2.  **Tag All Resources:** Every resource that can be tagged should be tagged at creation time.
-3.  **Tags Complement Compartments:** Compartments define the blast radius and ownership, while tags provide rich, queryable metadata about the resources within them.
+(No changes)
 
 ## 2. The `Tenancy-Management` Tag Namespace
 
-A single, central Tag Namespace is used for all resources.
+A single, central Tag Namespace is used for all resources. It must be created in the **Root Compartment**.
 
 **Namespace Name:** `Tenancy-Management`
 
 **Defined Keys:**
 
-| Key Name               | Type          | Description                                                      | Example Values                               |
-| ---------------------- | ------------- | ---------------------------------------------------------------- | -------------------------------------------- |
-| `Project-Name`         | String        | The name of the application or project the resource belongs to.  | `RAG-Project`, `hello-world`, `shared-infra` |
-| `Environment`          | String (List) | The deployment environment of the resource.                      | `prod`, `dev`, `sandbox`                     |
-| `Owner`                | String        | The person responsible for this resource.                        | `veno-ajie`                                  |
-| `Automation-Lifecycle` | String (List) | A flag for automation scripts to manage the resource's lifespan. | `persistent`, `temporary`                    |
+| Key Name               | Type          | Description                                                                 | Example Values                               |
+| ---------------------- | ------------- | --------------------------------------------------------------------------- | -------------------------------------------- |
+| `Project-Name`         | String        | The name of the application or project the resource belongs to.             | `RAG-Project`, `hello-world`, `shared-infra` |
+| `Environment`          | String (List) | The deployment environment of the resource.                                 | `prod`, `dev`, `sandbox`                     |
+| `Owner`                | String        | The person responsible for this resource.                                   | `veno-ajie`                                  |
+| `Automation-Lifecycle` | String (List) | A flag for automation scripts to manage the resource's lifespan.            | `persistent`, `temporary`                    |
+| `Service-Identifier`   | String        | A unique, machine-readable identifier for a specific service or component.  | `rag-ingestor`, `auth-api`                   |
 
-## 3. The IAM Power-Up: Tag-Based Policies
+---
 
-Tags are a critical component of our security strategy. They allow us to create highly granular permissions that are independent of compartments.
+## 3. Advanced Security: Tag-Based Dynamic Groups
 
-**Example Policy:** Granting a user full access to only sandbox resources.
+While compartment-based rules are good, tag-based rules provide the **maximum level of security and granularity**. This is the required pattern for all production functions.
+
+### The Problem with Compartment-Based Rules
+
+A rule like `ALL {resource.compartment.id = '...'}` is broad. If you accidentally create a second, unrelated function in the same compartment, it will instantly inherit all the sensitive permissions of the first function.
+
+### The Solution: Match a Unique Tag
+
+By matching a unique tag, we ensure that only the specific function we intend ever receives the permissions.
+
+**Step 1: Add the `Service-Identifier` Key**
+- In your `Tenancy-Management` Tag Namespace, add the new key `Service-Identifier`.
+
+**Step 2: Update the Dynamic Group Rule**
+- Navigate to your `RAGIngestorFunctionDynamicGroup`.
+- Replace the old compartment-based rule with this new, more secure tag-based rule:
 
 ```
-# This policy, attached to the 'Sandbox' compartment, allows a user to manage
-# any resource, but ONLY if that resource is explicitly tagged as 'sandbox'.
+# This rule matches ONLY the function that has been explicitly tagged
+# with the 'Service-Identifier' of 'rag-ingestor'.
 
-Allow group Sandbox-Users to manage all-resources in compartment Sandbox
-    where target.resource.tag."Tenancy-Management"."Environment" = 'sandbox'
+ALL {resource.type = 'fnfunc', resource.defined_tags.'Tenancy-Management'.'Service-Identifier' = 'rag-ingestor'}
 ```
 
-This prevents accidental damage to production resources and is a core pattern for secure access control.
+### How It Works Automatically
 
-## 4. A Repeatable Workflow for New Resources
+The CI/CD workflow in `.github/workflows/deploy.yml` is configured to automatically apply this exact tag (`"Tenancy-Management": {"Service-Identifier": "rag-ingestor"}`) every time the function is created or updated.
 
-Follow this checklist every time a new resource is created.
-
-1.  **Create the Resource:** Provision the new resource (e.g., a VM, a bucket) in its correct compartment.
-2.  **Apply Defined Tags:** Immediately after creation, navigate to the resource's "Tags" section.
-3.  **Assign Values:**
-    *   Select the `Tenancy-Management` namespace.
-    *   Assign a value for `Project-Name`.
-    *   Assign a value for `Environment`.
-    *   Assign a value for `Owner`.
-    *   Assign a value for `Automation-Lifecycle`.
+This creates a secure, "zero-trust" system where a function's identity is explicitly stamped onto it by the deployment pipeline, rather than being implicitly inherited from its location.
